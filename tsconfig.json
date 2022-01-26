@@ -1,6 +1,8 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "jsxImportSource": "@emotion/react",
+    "jsx": "preserve",
+    "target": "esnext",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
@@ -12,9 +14,10 @@
     "moduleResolution": "node",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
-    "incremental": true
+    "incremental": true,
+    "noImplicitAny": false
+    
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", "utils/memory.ts"],
   "exclude": ["node_modules"]
 }

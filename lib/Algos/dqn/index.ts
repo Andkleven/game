@@ -3,6 +3,7 @@ import { Environment } from "../../Environments";
 import { Space } from "../../Spaces/box";
 import * as random from "../../utils/random";
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import { ReplayBuffer, Transition } from "./replayBuffer";
 import { DeepPartial } from "../../utils/types";
 import { deepMerge } from "../../utils/deep";
@@ -10,7 +11,8 @@ import * as np from "../../utils/np";
 import { Scalar } from "@tensorflow/tfjs";
 import { NdArray } from "numjs";
 import pino from "pino";
-import * as ct from "../../utils/clusterTools";
+import { mean } from "lodash";
+import { Action, EpochCallback, StepCallback } from "../../Agent/type";
 const log = pino({
   prettyPrint: {
     colorize: true,
@@ -28,23 +30,9 @@ export interface DQNConfigs<Observation, Action> {
   /** Optional act function to replace the default act */
   act?: (obs: Observation) => Action;
 }
-export interface DQNTrainConfigs<Observation, Action> {
-  stepCallback(
-    stepData: Transition<Observation, Action> & {
-      step: number;
-      episodeDurations: number[];
-      episodeRewards: number[];
-      episodeIteration: number;
-      info: any;
-      loss: number | null;
-    }
-  ): any;
-  epochCallback(epochDate: {
-    step: number;
-    episodeDurations: number[];
-    episodeRewards: number[];
-    episodeIteration: number;
-  }): any;
+export interface DQNTrainConfigs {
+  stepCallback: StepCallback;
+  epochCallback: EpochCallback;
   optimizer: tf.Optimizer;
   gamma: number;
   epsStart: number;
@@ -63,11 +51,10 @@ export interface DQNTrainConfigs<Observation, Action> {
   verbosity: string;
   batchSize: number;
 }
-type Action = NdArray | number;
 export class DQN<
   ObservationSpace extends Space<Observation>,
   ActionSpace extends Space<Action>,
-  Observation
+  Observation extends NdArray<number>
 > extends Agent<Observation, Action> {
   public configs: DQNConfigs<Observation, Action> = {
     replayBufferCapacity: 1000,
@@ -149,13 +136,11 @@ export class DQN<
     return action as any;
   }
 
-  public async train(
-    trainConfigs: Partial<DQNTrainConfigs<Observation, Action>>
-  ) {
-    let configs: DQNTrainConfigs<Observation, Action> = {
+  public async train(trainConfigs: Partial<DQNTrainConfigs>) {
+    let configs: DQNTrainConfigs = {
       optimizer: tf.train.adam(1e-3),
       gamma: 0.999,
-      epsStart: 0.9,
+      epsStart: 1.0,
       epsEnd: 0.05,
       epsDecay: 200,
       learningStarts: 0,
@@ -166,14 +151,11 @@ export class DQN<
       verbosity: "info",
       batchSize: 32,
       name: "DQN_Train",
-      stepCallback: () => {},
+      stepCallback: async () => {},
       epochCallback: () => {},
     };
     configs = deepMerge(configs, trainConfigs);
     log.level = configs.verbosity;
-    if (ct.id() === 0) {
-      log.info(configs, `${configs.name} | Beginning training with configs`);
-    }
 
     const { optimizer, gamma } = configs;
     let state = this.env.reset();
@@ -214,7 +196,7 @@ export class DQN<
           optimizer,
         });
       }
-      if (configs.savePath && configs.saveLocation && ct.id() === 0) {
+      if (configs.savePath && configs.saveLocation) {
         if (t >= configs.learningStarts && t % configs.ckptFreq === 0) {
           // save policy and target net models.
           const policyNetSavePath = `${configs.saveLocation}://${configs.savePath}/policynet-${t}`;
@@ -228,17 +210,9 @@ export class DQN<
       }
 
       await configs.stepCallback({
-        state,
-        nextState,
-        reward,
-        action,
         step: t,
-        episodeRewards,
-        episodeDurations,
-        episodeIteration,
-        info: stepInfo.info,
-        done,
-        loss,
+        reward,
+        observation: state,
       });
 
       if (done) {
@@ -250,11 +224,13 @@ export class DQN<
           this.targetNet.setWeights(this.policyNet.getWeights());
         }
 
-        await configs.epochCallback({
+        configs.epochCallback({
           step: t,
-          episodeDurations,
-          episodeRewards,
-          episodeIteration,
+          statistics: {
+            mean: mean(episodeRewards),
+            max: Math.max(...episodeRewards),
+            min: Math.min(...episodeRewards),
+          },
         });
 
         // setup next episode
@@ -276,7 +252,7 @@ export class DQN<
     if (random.randomVal() > eps) {
       if (this.configs.act) return this.configs.act(obs);
       const pred = this.policyNet.predict(this.obsToTensor(obs)) as tf.Tensor;
-      const action = np.fromTensorSync(pred.argMax(1)).get(0) as $TSFIXME;
+      const action = np.fromTensorSync(pred.argMax(1)).get(0);
       return action;
     } else {
       // TODO: allow user to provide their own sampling algorithm
@@ -315,8 +291,8 @@ export class DQN<
       const _stateBatch: any[] = [];
       const _actionBatch: (tf.Tensor<tf.Rank> | tf.TensorLike)[] = [];
       const _nextStateBatch: any[] = [];
-      const _rewardBatch: any[] = [];
-      const _doneBatch: any[] = [];
+      const _rewardBatch: number[] = [];
+      const _doneBatch: boolean[] = [];
       for (let i = 0; i < configs.batchSize; i++) {
         _stateBatch.push(this.obsToTensor(transitions[i].state));
         _actionBatch.push(this.actionToTensor(transitions[i].action));
@@ -327,7 +303,7 @@ export class DQN<
 
       const stateBatch = tf.concat(_stateBatch); // [B, D]
       const actionBatch = tf.concat(_actionBatch).asType("int32"); // [B]
-      const rewardBatch = tf.concat(_rewardBatch); // [B]
+      const rewardBatch = tf.tensor(_rewardBatch); // [B]
       const nextStateBatch = tf.concat(_nextStateBatch); // [B, D]
 
       this.targetNet.trainable = false;

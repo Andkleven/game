@@ -3,20 +3,22 @@ import { Environment } from "../../Environments";
 import { Space } from "../../Spaces/box";
 import * as random from "../../utils/random";
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import { PPOBuffer, PPOBufferComputations } from "../../Algos/ppo/buffer";
 import { DeepPartial } from "../../utils/types";
 import { deepMerge } from "../../utils/deep";
 import * as np from "../../utils/np";
 import * as ct from "../../utils/clusterTools";
-import { NdArray } from "numjs";
 import { ActorCritic } from "../../Models/ac";
+import { Action, EpochCallback, StepCallback } from "../../Agent/type";
 import pino from "pino";
+import { NdArray } from "numjs";
+
 const log = pino({
   prettyPrint: {
     colorize: true,
   },
 });
-
 export interface PPOConfigs<Observation, Action> {
   /** Converts observations to batchable tensors of shape [1, ...observation shape] */
   obsToTensor: (state: Observation) => tf.Tensor;
@@ -26,27 +28,10 @@ export interface PPOConfigs<Observation, Action> {
   act?: (obs: Observation) => Action;
 }
 export interface PPOTrainConfigs {
-  stepCallback(stepData: {
-    step: number;
-    episodeDurations: number[];
-    episodeRewards: number[];
-    episodeIteration: number;
-    info: any;
-    loss: number | null;
-  }): any;
-  epochCallback(epochDate: {
-    epoch: number;
-    kl: number;
-    entropy: number;
-    delta_pi_loss: number;
-    delta_vf_loss: number;
-    ep_rets: {
-      mean: number;
-      std: number;
-    };
-  }): any;
-  pi_optimizer: tf.Optimizer;
-  vf_optimizer: tf.Optimizer;
+  stepCallback: StepCallback;
+  epochCallback: EpochCallback;
+  piLr: number;
+  vfLr: number;
   /** How frequently in terms of total steps to save the model. This is not used if saveDirectory is not provided */
   ckptFreq: number;
   /** path to store saved models in. */
@@ -56,19 +41,19 @@ export interface PPOTrainConfigs {
   verbosity: string;
   gamma: number;
   lam: number;
-  target_kl: number;
-  clip_ratio: number;
-  train_v_iters: number;
-  train_pi_iters: number;
-  steps_per_epoch: number;
+  targetKl: number;
+  clipRatio: number;
+  trainVIters: number;
+  trainPiIters: number;
+  stepsPerEpoch: number;
   /** maximum length of each trajectory collected */
-  max_ep_len: number;
+  maxEpLen: number;
   seed: number;
   name: string;
 }
-type Action = NdArray | number;
+
 export class PPO<
-  Observation,
+  Observation extends NdArray<number>,
   ObservationSpace extends Space<Observation>,
   ActionSpace extends Space<Action>
 > extends Agent<Observation, Action> {
@@ -98,6 +83,8 @@ export class PPO<
   /** Converts observations to batchable tensors of shape [1, ...observation shape] */
   private obsToTensor: (obs: Observation) => tf.Tensor;
   private actionToTensor: (action: tf.Tensor) => TensorLike;
+  private stopValue = false;
+  private done = true;
 
   constructor(
     /** function that creates environment for interaction */
@@ -136,31 +123,34 @@ export class PPO<
 
   public async train(trainConfigs: Partial<PPOTrainConfigs>) {
     let configs: PPOTrainConfigs = {
-      vf_optimizer: tf.train.adam(1e-3),
-      pi_optimizer: tf.train.adam(3e-4),
+      vfLr: 1e-3,
+      piLr: 3e-4,
       ckptFreq: 1000,
-      steps_per_epoch: 10000,
-      max_ep_len: 1000,
+      stepsPerEpoch: 10000,
+      maxEpLen: 1000,
       epochs: 50,
-      train_v_iters: 80,
+      trainVIters: 80,
+      trainPiIters: 1,
       gamma: 0.99,
       lam: 0.97,
-      clip_ratio: 0.2,
+      clipRatio: 0.2,
       seed: 0,
-      train_pi_iters: 1,
-      target_kl: 0.01,
+      targetKl: 0.01,
       verbosity: "info",
       name: "PPO_Train",
-      stepCallback: () => {},
+      stepCallback: async () => {},
       epochCallback: () => {},
     };
+    this.done = false;
     configs = deepMerge(configs, trainConfigs);
     log.level = configs.verbosity;
 
-    const { clip_ratio, vf_optimizer, pi_optimizer, target_kl } = configs;
+    const { clipRatio: clip_ratio, vfLr, piLr, targetKl: target_kl } = configs;
+    const pi_optimizer: tf.Optimizer = tf.train.adam(piLr);
+    const vf_optimizer: tf.Optimizer = tf.train.adam(vfLr);
 
     // TODO do some seeding things
-    configs.seed += 99999 * ct.id();
+    configs.seed += 99999;
     random.seed(configs.seed);
     // TODO: seed tensorflow if possible
 
@@ -168,16 +158,13 @@ export class PPO<
     const obs_dim = env.observationSpace.shape;
     const act_dim = env.actionSpace.shape;
 
-    let local_steps_per_epoch = configs.steps_per_epoch / ct.numProcs();
+    let local_steps_per_epoch = configs.stepsPerEpoch;
     if (Math.ceil(local_steps_per_epoch) !== local_steps_per_epoch) {
-      configs.steps_per_epoch =
-        Math.ceil(local_steps_per_epoch) * ct.numProcs();
+      configs.stepsPerEpoch = Math.ceil(local_steps_per_epoch);
       log.warn(
-        `${configs.name} | Changing steps per epoch to ${
-          configs.steps_per_epoch
-        } as there are ${ct.numProcs()} processes running`
+        `${configs.name} | Changing steps per epoch to ${configs.stepsPerEpoch} as there are 1 processes running`
       );
-      local_steps_per_epoch = configs.steps_per_epoch / ct.numProcs();
+      local_steps_per_epoch = configs.stepsPerEpoch;
     }
 
     const buffer = new PPOBuffer({
@@ -187,10 +174,6 @@ export class PPO<
       obsDim: obs_dim,
       size: local_steps_per_epoch,
     });
-
-    if (ct.id() === 0) {
-      log.info(configs, `${configs.name} | Beginning training with configs`);
-    }
 
     type pi_info = {
       approx_kl: number;
@@ -249,9 +232,9 @@ export class PPO<
       let loss_pi_new = 0;
       let loss_vf_new = 0;
 
-      let trained_pi_iters = configs.train_pi_iters;
+      let trained_pi_iters = configs.trainPiIters;
 
-      for (let i = 0; i < configs.train_pi_iters; i++) {
+      for (let i = 0; i < configs.trainPiIters; i++) {
         const pi_grads = pi_optimizer.computeGradients(() => {
           const { loss_pi, pi_info } = compute_loss_pi(data);
           kl = pi_info.approx_kl;
@@ -260,42 +243,38 @@ export class PPO<
 
           return loss_pi as tf.Scalar;
         });
-        kl = await ct.avgNumber(kl);
         if (kl > 1.5 * target_kl) {
           log.warn(
             `${configs.name} | Early stopping at step ${i + 1}/${
-              configs.train_pi_iters
+              configs.trainPiIters
             } of optimizing policy due to reaching max kl`
           );
           trained_pi_iters = i + 1;
           break;
         }
-        await ct.averageGradients(pi_grads.grads);
 
         pi_optimizer.applyGradients(pi_grads.grads);
-        if (i === configs.train_pi_iters - 1) {
+        if (i === configs.trainPiIters - 1) {
           loss_pi_new = pi_grads.value.arraySync();
         }
       }
 
-      clip_frac = await ct.avgNumber(clip_frac);
-      entropy = await ct.avgNumber(entropy);
-
-      for (let i = 0; i < configs.train_v_iters; i++) {
+      for (let i = 0; i < configs.trainVIters; i++) {
+        if (this.stopValue) {
+          this.done = true;
+          return "done";
+        }
         const vf_grads = vf_optimizer.computeGradients(() => {
           const loss_v = compute_loss_vf(data);
           return loss_v as tf.Scalar;
         });
-        await ct.averageGradients(vf_grads.grads);
         vf_optimizer.applyGradients(vf_grads.grads);
-        if (i === configs.train_pi_iters - 1) {
+        if (i === configs.trainPiIters - 1) {
           loss_vf_new = vf_grads.value.arraySync();
         }
       }
       let delta_pi_loss = loss_pi_new - (loss_pi_old.arraySync() as number);
       let delta_vf_loss = loss_vf_new - (loss_vf_old.arraySync() as number);
-      delta_pi_loss = await ct.avgNumber(delta_pi_loss);
-      delta_vf_loss = await ct.avgNumber(delta_vf_loss);
       const metrics = {
         kl,
         entropy,
@@ -310,10 +289,18 @@ export class PPO<
     // const start_time = process.hrtime()[0] * 1e6 + process.hrtime()[1];
     let o = env.reset();
     let ep_ret = 0;
-    let ep_len = 0;
     let ep_rets: number[] = [];
+    let ep_len = 0;
     for (let epoch = 0; epoch < configs.epochs; epoch++) {
+      if (this.stopValue) {
+        this.done = true;
+        return "done";
+      }
       for (let t = 0; t < local_steps_per_epoch; t++) {
+        if (this.stopValue) {
+          this.done = true;
+          return "done";
+        }
         const { a, v, logp_a } = this.ac.step(this.obsToTensor(o));
         const action = np.tensorLikeToNdArray(this.actionToTensor(a));
         const stepInfo = env.step(action);
@@ -321,6 +308,7 @@ export class PPO<
 
         const r = stepInfo.reward;
         const d = stepInfo.done;
+        await configs.stepCallback({ observation: next_o, reward: r, step: t });
         ep_ret += r;
         ep_len += 1;
 
@@ -334,7 +322,7 @@ export class PPO<
 
         o = next_o;
 
-        const timeout = ep_len === configs.max_ep_len;
+        const timeout = ep_len === configs.maxEpLen;
         const terminal = d || timeout;
         const epoch_ended = t === local_steps_per_epoch - 1;
         if (terminal || epoch_ended) {
@@ -362,28 +350,31 @@ export class PPO<
       // TODO save model
 
       // update actor critic
-      const metrics = await update();
-      const ep_rets_metrics = await ct.statisticsScalar(
+      await update();
+      const statistics = await ct.statisticsScalar(
         np.tensorLikeToTensor(ep_rets)
       );
 
-      if (ct.id() === 0) {
-        const msg = `${configs.name} | Epoch ${epoch} metrics: `;
-        log.info(
-          {
-            ...metrics,
-            ep_rets: ep_rets_metrics,
-          },
-          msg
-        );
-      }
-      await configs.epochCallback({
-        epoch,
-        ...metrics,
-        ep_rets: ep_rets_metrics,
+      configs.epochCallback({
+        step: epoch,
+        statistics,
       });
 
       ep_rets = [];
     }
+  }
+  async stop() {
+    this.stopValue = true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  async isStop() {
+    return await new Promise((resolve) => {
+      while (true) {
+        if (this.done) {
+          resolve(true);
+          return;
+        }
+      }
+    });
   }
 }

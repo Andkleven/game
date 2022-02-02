@@ -2,10 +2,11 @@ import { Environment, RenderModes } from "../../../Environments";
 import { Box } from "../../../Spaces/box";
 import { Discrete } from "../../../Spaces/discrete";
 import nj, { NdArray } from "numjs";
+import { Action } from "../../../Agent/type";
+import { tensorLikeToNdArray } from "../../../utils/np";
 
 export type State = NdArray<number>;
 export type Observation = NdArray<number>;
-export type Action = number | TensorLike;
 export type ActionSpace = Discrete;
 export type ObservationSpace = Box;
 export type Reward = number;
@@ -35,7 +36,7 @@ export interface CartPoleConfigs {
 function randomTarget() {
   return Number(
     (
-      (choice(9, [0.2, 0.15, 0.15, 0, 0, 0, 0.15, 0.15, 0.2])[0] + 0.1) /
+      (choice(1, [0.2, 0.15, 0.15, 0, 0, 0, 0.15, 0.15, 0.2])[0] + 1) /
       10.0
     ).toFixed(1)
   );
@@ -51,7 +52,7 @@ export class Custom extends Environment<
   Action,
   Reward
 > {
-  public observationSpace: ObservationSpace;
+  public observationSpace = new Box(0, 1, [2], "float32");
   /** 0 or 1 represent applying force of -force_mag or force_mag */
   public actionSpace = new Discrete(2);
   public reachedGoal = false;
@@ -77,32 +78,30 @@ export class Custom extends Environment<
     if (configs.maxEpisodeSteps) {
       this.maxEpisodeSteps = configs.maxEpisodeSteps;
     }
-
-    this.observationSpace = new Box(0, 1, [2], "float32");
-    this.actionSpace = new Discrete(2);
   }
   reset(): State {
     this.reachedGoal = false;
+    this.environment = {
+      position: 0.5,
+      target: randomTarget(),
+    };
     this.stepsNecessary = Number(
       (
         Math.abs(this.environment["position"] - this.environment["target"]) * 10
       ).toFixed(1)
     );
-    this.environment = {
-      position: 0.5,
-      target: randomTarget(),
-    };
     this.steps = 0;
     this.steps_beyond_done = null;
     this.timestep = 0;
-    return nj.array(Object.values(this.environment));
+    return nj.array([this.environment.position, this.environment.target]);
   }
   private takeStep(action: Action) {
-    if (action === 0) {
+    const actionArray = tensorLikeToNdArray(action);
+    if (actionArray.get(0) === 0) {
       this.environment["position"] = Number(
         (this.environment["position"] - 0.1).toFixed(1)
       );
-    } else if (action === 1) {
+    } else if (actionArray.get(0) === 1) {
       this.environment["position"] = Number(
         (this.environment["position"] + 0.1).toFixed(1)
       );
@@ -159,10 +158,10 @@ export class Custom extends Environment<
     mode: RenderModes,
     configs: { fps: number; episode?: number; rewards?: number } = { fps: 60 }
   ): Promise<void> {
-    if (mode === "web") {
-      console.log(`Step: ${this.step}, Reward: ${configs.rewards}`);
-    } else {
-      throw new Error(`${mode} is not an available render mode`);
-    }
+    // if (mode === "web") {
+    //   console.log(`Step: ${this.step}, Reward: ${configs.rewards}`);
+    // } else {
+    //   throw new Error(`${mode} is not an available render mode`);
+    // }
   }
 }

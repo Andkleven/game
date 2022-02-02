@@ -1,14 +1,16 @@
-import { Agent } from "../../Agent";
+import { NdArray } from "numjs";
+import { Agent } from "../../Agent/index";
+import { Action, EpochCallback, StepCallback } from "../../Agent/type";
 import { Environment } from "../../Environments";
 import { Space } from "../../Spaces/box";
 import * as random from "../../utils/random";
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import { VPGBuffer, VPGBufferComputations } from "../../Algos/vpg/buffer";
 import { DeepPartial } from "../../utils/types";
 import { deepMerge } from "../../utils/deep";
 import * as np from "../../utils/np";
 import * as ct from "../../utils/clusterTools";
-import { NdArray } from "numjs";
 import { ActorCritic } from "../../Models/ac";
 import pino from "pino";
 const log = pino({
@@ -16,7 +18,6 @@ const log = pino({
     colorize: true,
   },
 });
-
 export interface VPGConfigs<Observation, Action> {
   /** Converts observations to batchable tensors of shape [1, ...observation shape] */
   obsToTensor: (state: Observation) => tf.Tensor;
@@ -26,25 +27,8 @@ export interface VPGConfigs<Observation, Action> {
   act?: (obs: Observation) => Action;
 }
 export interface VPGTrainConfigs {
-  stepCallback(stepData: {
-    step: number;
-    episodeDurations: number[];
-    episodeRewards: number[];
-    episodeIteration: number;
-    info: any;
-    loss: number | null;
-  }): any;
-  epochCallback(epochDate: {
-    epoch: number;
-    kl: number;
-    entropy: number;
-    delta_pi_loss: number;
-    delta_vf_loss: number;
-    ep_rets: {
-      mean: number;
-      std: number;
-    };
-  }): any;
+  stepCallback: StepCallback;
+  epochCallback: EpochCallback;
   pi_optimizer: tf.Optimizer;
   vf_optimizer: tf.Optimizer;
   /** How frequently in terms of total steps to save the model. This is not used if saveDirectory is not provided */
@@ -64,9 +48,9 @@ export interface VPGTrainConfigs {
   seed: number;
   name: string;
 }
-type Action = NdArray | number;
+
 export class VPG<
-  Observation,
+  Observation extends NdArray<number>,
   ObservationSpace extends Space<Observation>,
   ActionSpace extends Space<Action>
 > extends Agent<Observation, Action> {
@@ -147,7 +131,7 @@ export class VPG<
       train_pi_iters: 1,
       verbosity: "info",
       name: "VPG_Train",
-      stepCallback: () => {},
+      stepCallback: async () => {},
       epochCallback: () => {},
     };
     configs = deepMerge(configs, trainConfigs);
@@ -156,7 +140,7 @@ export class VPG<
     const { vf_optimizer, pi_optimizer } = configs;
 
     // TODO do some seeding things
-    configs.seed += 99999 * ct.id();
+    configs.seed += 99999;
     random.seed(configs.seed);
     // TODO: seed tensorflow if possible
 
@@ -164,16 +148,15 @@ export class VPG<
     const obs_dim = env.observationSpace.shape;
     const act_dim = env.actionSpace.shape;
 
-    let local_steps_per_epoch = configs.steps_per_epoch / ct.numProcs();
+    let local_steps_per_epoch = configs.steps_per_epoch;
     if (Math.ceil(local_steps_per_epoch) !== local_steps_per_epoch) {
-      configs.steps_per_epoch =
-        Math.ceil(local_steps_per_epoch) * ct.numProcs();
+      configs.steps_per_epoch = Math.ceil(local_steps_per_epoch);
       log.warn(
         `${configs.name} | Changing steps per epoch to ${
           configs.steps_per_epoch
-        } as there are ${ct.numProcs()} processes running`
+        } as there are ${1} processes running`
       );
-      local_steps_per_epoch = configs.steps_per_epoch / ct.numProcs();
+      local_steps_per_epoch = configs.steps_per_epoch;
     }
 
     const buffer = new VPGBuffer({
@@ -184,9 +167,7 @@ export class VPG<
       size: local_steps_per_epoch,
     });
 
-    if (ct.id() === 0) {
-      log.info(configs, `${configs.name} | Beginning training with configs`);
-    }
+    log.info(configs, `${configs.name} | Beginning training with configs`);
 
     type pi_info = {
       approx_kl: number;
@@ -234,22 +215,17 @@ export class VPG<
           entropy = pi_info.entropy;
           return loss_pi as tf.Scalar;
         });
-        await ct.averageGradients(pi_grads.grads);
         pi_optimizer.applyGradients(pi_grads.grads);
         if (i === configs.train_pi_iters - 1) {
           loss_pi_new = pi_grads.value.arraySync();
         }
       }
 
-      kl = await ct.avgNumber(kl);
-      entropy = await ct.avgNumber(entropy);
-
       for (let i = 0; i < configs.train_v_iters; i++) {
         const vf_grads = vf_optimizer.computeGradients(() => {
           const loss_v = compute_loss_vf(data);
           return loss_v as tf.Scalar;
         });
-        await ct.averageGradients(vf_grads.grads);
         vf_optimizer.applyGradients(vf_grads.grads);
         if (i === configs.train_pi_iters - 1) {
           loss_vf_new = vf_grads.value.arraySync();
@@ -257,8 +233,6 @@ export class VPG<
       }
       let delta_pi_loss = loss_pi_new - (loss_pi_old.arraySync() as number);
       let delta_vf_loss = loss_vf_new - (loss_vf_old.arraySync() as number);
-      delta_pi_loss = await ct.avgNumber(delta_pi_loss);
-      delta_vf_loss = await ct.avgNumber(delta_vf_loss);
       const metrics = { kl, entropy, delta_pi_loss, delta_vf_loss };
       return metrics;
     };
@@ -289,7 +263,7 @@ export class VPG<
         );
 
         o = next_o;
-
+        await configs.stepCallback({ step: t, reward: r, observation: next_o });
         const timeout = ep_len === configs.max_ep_len;
         const terminal = d || timeout;
         const epoch_ended = t === local_steps_per_epoch - 1;
@@ -316,27 +290,15 @@ export class VPG<
         }
       }
       // TODO save model
-
+      await update();
       // update actor critic
-      const metrics = await update();
-      const ep_rets_metrics = await ct.statisticsScalar(
+      const statistics = await ct.statisticsScalar(
         np.tensorLikeToTensor(ep_rets)
       );
 
-      if (ct.id() === 0) {
-        const msg = `${configs.name} | Epoch ${epoch} metrics: `;
-        log.info(
-          {
-            ...metrics,
-            ep_rets: ep_rets_metrics,
-          },
-          msg
-        );
-      }
-      await configs.epochCallback({
-        epoch,
-        ...metrics,
-        ep_rets: ep_rets_metrics,
+      configs.epochCallback({
+        step: epoch,
+        statistics,
       });
 
       ep_rets = [];

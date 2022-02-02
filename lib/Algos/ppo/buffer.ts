@@ -1,4 +1,5 @@
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import nj, { NdArray } from "numjs";
 import * as np from "../../utils/np";
 import * as core from "../../Algos/utils/core";

@@ -1,4 +1,5 @@
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import * as np from "../../utils/np";
 import { NdArray } from "numjs";
 import { Distribution } from ".";

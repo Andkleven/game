@@ -1,6 +1,6 @@
 import { NotImplementedError } from "../Errors";
-import { Space } from "../Spaces";
-
+import { Space } from "../Spaces/box";
+import { Action } from "../Agent/type";
 export type RenderModes = "web" | "ansi";
 
 export type Dynamics<State, Action, Reward> = (
@@ -180,7 +180,7 @@ export abstract class Environment<
     sucessorState: State,
     reward: number,
     state: State,
-    action: Action
+    action: number[]
   ): number {
     throw new NotImplementedError(
       "Environment dynamics not implemented / provided"

@@ -1,12 +1,11 @@
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import { SymbolicTensor } from "@tensorflow/tfjs";
 import { ActivationIdentifier } from "@tensorflow/tfjs-layers/dist/keras_format/activation_config";
 import { Box, Space } from "../Spaces/box";
 import { Discrete } from "../Spaces/discrete";
 import { Distribution } from "../utils/Distributions";
 import { Normal } from "../utils/Distributions/normal";
-
-let global_gaussian_actor_log_std_id = 0;
 
 /** Create a MLP model */
 export const createMLP = (
@@ -81,11 +80,7 @@ export class MLPGaussianActor extends ActorBase<tf.Tensor> {
     activation: ActivationIdentifier
   ) {
     super();
-    this.log_std = tf.variable(
-      tf.ones([act_dim], "float32").mul(-0.5),
-      true,
-      `gaussian_actor_log_std_${global_gaussian_actor_log_std_id++}`
-    );
+    this.log_std = tf.variable(tf.ones([act_dim], "float32").mul(-0.5), true);
     this.mu_net = createMLP(
       obs_dim,
       act_dim,

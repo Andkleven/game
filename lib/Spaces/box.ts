@@ -1,3 +1,4 @@
+import { Action } from "./../Agent/type";
 import { DataType, NdArray } from "ndarray";
 import nj from "numjs";
 import seedrandom from "seedrandom";
@@ -5,6 +6,7 @@ import { prng } from "../utils/random";
 import * as np from "../utils/np";
 import ops from "ndarray-ops";
 import * as tf from "@tensorflow/tfjs";
+tf.ENV.set("WEBGL_PACK", false);
 import * as random from "../utils/random";
 export type Shape = number[];
 export interface SpaceMeta {
@@ -21,7 +23,7 @@ export abstract class Space<T> {
     public meta: SpaceMeta
   ) {}
   public rng: prng = seedrandom();
-  abstract sample(): T;
+  abstract sample(): Action;
   abstract contains(x: T): boolean;
   seed(seed: string | undefined): void {
     this.rng = seedrandom(seed);
@@ -119,11 +121,11 @@ export class Box extends Space<nj.NdArray<number>> {
   seed(seed: string | undefined): void {
     this.rng = seedrandom(seed);
   }
-  sample(): nj.NdArray<number> {
+  sample(): Action {
     const sample = np.zeros(this.shape);
     // determine which indices are lower bounded and upper bounded
     if (this.boundedBelow === null && this.boundedAbove === null) {
-      return np.fromTensorSync(tf.randomNormal(this.shape));
+      return tf.randomNormal(this.shape).arraySync();
     }
 
     np.set(
@@ -160,7 +162,7 @@ export class Box extends Space<nj.NdArray<number>> {
       }
       np.set(sample, this.bounded, vals);
     }
-    return np.toNj(sample);
+    return np.toTensorFromNp(sample).arraySync();
   }
   contains(x: NdArray): boolean {
     if (!np.arrayEqual(x.shape, this.shape)) return false;

@@ -14,9 +14,28 @@ import {
   StepCallback,
 } from "../../lib/Agent/type";
 import HelpText from "../HelpText";
-
+import { Line } from "react-chartjs-2";
 import { Slider, Button, NumberInput, Paper } from "@mantine/core";
 import { useForm } from "@mantine/hooks";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from "chart.js";
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 const borders = new Array(11).fill(0);
 
@@ -91,6 +110,33 @@ const Ppo = () => {
     });
     return done;
   }, []);
+
+  const data = {
+    labels: epochs.map(({ step }) => step.toString()),
+    datasets: [
+      {
+        label: "Max",
+        data: epochs.map(({ statistics }) => statistics["max"]),
+        borderColor: "rgb(99, 255, 132)",
+        backgroundColor: "rgba(99, 255, 132, 0.5)",
+      },
+      {
+        label: "Min",
+        data: epochs.map(({ statistics }) => statistics["min"]),
+        borderColor: "rgb(255, 99, 132)",
+        backgroundColor: "rgba(255, 99, 132, 0.5)",
+      },
+      {
+        label: "Mean",
+        data: epochs.map(({ statistics }) => statistics["mean"]),
+        borderColor: "rgb(99, 132, 255)",
+        backgroundColor: "rgba(99, 132, 255, 0.5)",
+      },
+    ],
+  };
+
+  const showChart = epochs.length > 0;
+
   return (
     <div
       css={css`
@@ -101,28 +147,32 @@ const Ppo = () => {
         justify-content: end;
         padding: 20px;
         grid-gap: 5px;
-        grid-template-columns: 1fr 1fr 1fr;
-        grid-template-areas: "statistics environment form";
+        grid-template-columns: 1fr 1fr;
+        grid-template-areas: ${showChart
+          ? '"statistics statistics" "environment form"'
+          : '"environment form"'};
       `}
     >
-      <div
-        css={css`
-          grid-area: statistics;
-        `}
-      >
-        {epochs.map(({ statistics, step }, index) => (
-          <Fragment key={[index, step, "Epoch"].join("-")}>
-            <h3>Epoch: {step + 1}</h3>
-            {Object.keys(statistics).map((key, index) => {
-              return (
-                <div key={["statistics", key, index, step].join("-")}>
-                  {key}: {statistics[key]}
-                </div>
-              );
-            })}
-          </Fragment>
-        ))}
-      </div>
+      {showChart ? (
+        <div
+          css={css`
+            grid-area: statistics;
+          `}
+        >
+          <Line
+            data={data}
+            options={{
+              responsive: true,
+              plugins: {
+                title: {
+                  display: true,
+                  text: "Epochs",
+                },
+              },
+            }}
+          />
+        </div>
+      ) : null}
       <div
         css={css`
           grid-area: environment;
@@ -190,23 +240,35 @@ const Ppo = () => {
               runModel(values);
             })}
           >
-            <HelpText text={"test"}>
+            <HelpText
+              text={
+                "Number of steps of interaction (state-action pairs) for the agent and the environment in each epoch."
+              }
+            >
               <NumberInput
                 required
                 label="Steps Per Epoch"
                 {...form.getInputProps("stepsPerEpoch")}
               />
             </HelpText>
-            <HelpText text={"test"}>
+            <HelpText
+              text={
+                "Number of Epochs is the number of passes through the experience buffer during gradient descent. The larger the batch size, the larger it is acceptable to make this. Decreasing this will ensure more stable updates, at the cost of slower learning"
+              }
+            >
               <NumberInput
                 required
-                label="Epochs"
+                label="Number of Epochs"
                 {...form.getInputProps("epochs")}
               />
             </HelpText>
             <div>
               <label>Gamma</label>
-              <HelpText text={"test"}>
+              <HelpText
+                text={
+                  "Gamma corresponds to the discount factor for future rewards. This can be thought of as how far into the future the agent should care about possible rewards. In situations when the agent should be acting in the present in order to prepare for rewards in the distant future, this value should be large. In cases when rewards are more immediate, it can be smaller. \n \n Typical Range: 0.8 - 0.995"
+                }
+              >
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(2)}
@@ -219,7 +281,11 @@ const Ppo = () => {
             </div>
             <div>
               <label>Clip Ratio</label>
-              <HelpText text={"test"}>
+              <HelpText
+                text={
+                  "Hyperparameter for clipping in the policy objective. Roughly: how far can the new policy go from the old policy while still profiting (improving the objective function)? The new policy can still go farther than the clip_ratio says, but it doesn’t help on the objective anymore. (Usually small, 0.1 to 0.3.) Typically denoted by epsilon"
+                }
+              >
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(1)}
@@ -232,7 +298,7 @@ const Ppo = () => {
             </div>
             <div>
               <label>pi_lr</label>
-              <HelpText text={"test"}>
+              <HelpText text={"Learning rate for policy optimizer."}>
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(6)}
@@ -245,7 +311,7 @@ const Ppo = () => {
             </div>
             <div>
               <label>vf_lr</label>
-              <HelpText text={"test"}>
+              <HelpText text={"Learning rate for value function optimizer."}>
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(6)}
@@ -256,34 +322,31 @@ const Ppo = () => {
                 />
               </HelpText>
             </div>
-            <HelpText text={"test"}>
+            <HelpText
+              text={
+                "Number of gradient descent steps to take on value function per epoch."
+              }
+            >
               <NumberInput
                 required
                 label="train_v_iters"
                 {...form.getInputProps("trainVIters")}
               />
             </HelpText>
-            <HelpText text={"test"}>
+            <HelpText
+              text={
+                "Maximum number of gradient descent steps to take on policy loss per epoch. (Early stopping may cause optimizer to take fewer than this.)"
+              }
+            >
               <NumberInput
                 required
                 label="train_pi_iters"
                 {...form.getInputProps("trainPiIters")}
               />
             </HelpText>
-            <div>
-              <label>Lam</label>
-              <HelpText text={"test"}>
-                <Slider
-                  labelAlwaysOn
-                  label={(value) => value.toFixed(2)}
-                  {...form.getInputProps("vfLr")}
-                  step={0.01}
-                  max={1.0}
-                  min={0.0}
-                />
-              </HelpText>
-            </div>
-            <HelpText text={"test"}>
+            <HelpText
+              text={"Maximum length of trajectory / episode / rollout."}
+            >
               <NumberInput
                 required
                 label="MaxEpLen"
@@ -292,7 +355,11 @@ const Ppo = () => {
             </HelpText>
             <div>
               <label>targetKl</label>
-              <HelpText text={"test"}>
+              <HelpText
+                text={
+                  "Roughly what KL divergence we think is appropriate between new and old policies after an update. This will get used for early stopping. (Usually small, 0.01 or 0.05.)"
+                }
+              >
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(3)}

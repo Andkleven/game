@@ -23,11 +23,11 @@ export const statisticsScalar = async (
   asTensor = false
 ) => {
   let maxv;
-  if (!exclude.max) {
+  if (!exclude.max && 0 < x.shape.length) {
     maxv = x.max();
   }
   let minv;
-  if (!exclude.max) {
+  if (!exclude.min && 0 < x.shape.length) {
     minv = x.min();
   }
   let global_sum;

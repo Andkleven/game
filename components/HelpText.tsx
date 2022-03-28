@@ -60,7 +60,11 @@ export default function HelpText({
                 : theme.colors.gray[1],
           }}
         >
-          <Center style={{ height: 100, width: 200 }}>{text}</Center>
+          <Center
+            style={{ maxWidth: 500, padding: "10px", whiteSpace: "pre-line" }}
+          >
+            {text}
+          </Center>
         </Paper>
       </Popper>
     </div>

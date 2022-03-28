@@ -2,7 +2,9 @@ import { css } from "@emotion/react";
 import { NextPage } from "next";
 import dynamic from "next/dynamic";
 
-const Effect = dynamic(() => import("../components/Hooks"));
+const BabylonScene = dynamic(() => import("../components/BabylonScene"), {
+  ssr: false,
+});
 const DefaultPlayground: NextPage = () => {
   return (
     <div
@@ -23,7 +25,7 @@ const DefaultPlayground: NextPage = () => {
           height: 100%;
         `}
       >
-        <Effect />
+        <BabylonScene />
       </div>
     </div>
   );

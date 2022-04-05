@@ -5,6 +5,7 @@ export type StepCallbackInput = {
   step: number;
   reward: number;
   observation: NdArray<number>;
+  done: boolean;
 };
 export type StepCallback = (config: StepCallbackInput) => Promise<void>;
 export type EpochCallbackInput = {

@@ -88,6 +88,7 @@ export class MLPGaussianActor extends ActorBase<tf.Tensor> {
       activation,
       "MLP Gaussian Actor"
     );
+
     this.mu = tf.variable(tf.tensor(0));
   }
   _distribution(obs: tf.Tensor) {

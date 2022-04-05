@@ -308,7 +308,12 @@ export class PPO<
 
         const r = stepInfo.reward;
         const d = stepInfo.done;
-        await configs.stepCallback({ observation: next_o, reward: r, step: t });
+        await configs.stepCallback({
+          observation: next_o,
+          reward: r,
+          step: t,
+          done: d,
+        });
         ep_ret += r;
         ep_len += 1;
 

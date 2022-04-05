@@ -32,6 +32,10 @@ export function choice(number: number, prop: number[]): number[] {
 }
 export interface CartPoleConfigs {
   maxEpisodeSteps: number;
+  rewardStep: number;
+  rewardTargetReached: number;
+  rewardTargetNotReached: number;
+  reachedTargetFirstTry: number;
 }
 function randomTarget() {
   return Number(
@@ -56,7 +60,6 @@ export class Custom extends Environment<
   /** 0 or 1 represent applying force of -force_mag or force_mag */
   public actionSpace = new Discrete(2);
   public reachedGoal = false;
-  public maxSteps = 50;
   public done = false;
   public steps = 0;
   public steps_beyond_done: null | number = null;
@@ -73,11 +76,22 @@ export class Custom extends Environment<
     ).toFixed(1)
   );
   public state: NdArray = nj.array(Object.values(this.environment));
-  constructor(configs: Partial<CartPoleConfigs> = {}) {
+  private rewardStep: number = 0;
+  private rewardTargetReached: number = 0;
+  private rewardTargetNotReached: number = 0;
+  constructor({
+    maxEpisodeSteps,
+    rewardStep,
+    rewardTargetNotReached,
+    rewardTargetReached,
+  }: CartPoleConfigs) {
     super("CartPole");
-    if (configs.maxEpisodeSteps) {
-      this.maxEpisodeSteps = configs.maxEpisodeSteps;
+    if (maxEpisodeSteps) {
+      this.maxEpisodeSteps = maxEpisodeSteps;
     }
+    this.rewardStep = rewardStep;
+    this.rewardTargetNotReached = rewardTargetNotReached;
+    this.rewardTargetReached = rewardTargetReached;
   }
   reset(): State {
     this.reachedGoal = false;
@@ -109,16 +123,16 @@ export class Custom extends Environment<
     return [this.environment.position, this.environment.target];
   }
   private setReward(): number {
-    let reward = -1;
+    let reward = this.rewardStep;
     if (this.done) {
       if (this.reachedGoal) {
         if (this.stepsNecessary === this.steps) {
           reward = 20;
         } else {
-          reward = 10;
+          reward = this.rewardTargetReached;
         }
       } else {
-        reward = -10;
+        reward = this.rewardTargetNotReached;
       }
     }
     return reward;
@@ -136,7 +150,7 @@ export class Custom extends Environment<
       this.reachedGoal = true;
       done = true;
     }
-    if (this.maxSteps <= this.steps) {
+    if (this.maxEpisodeSteps <= this.steps) {
       done = true;
     }
     return done;

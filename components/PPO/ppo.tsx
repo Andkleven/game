@@ -1,6 +1,9 @@
 import { css } from "@emotion/react";
 
-import { Custom } from "../../lib/Environments/examples/custom/index";
+import {
+  Custom,
+  CartPoleConfigs,
+} from "../../lib/Environments/examples/custom/index";
 import { seed } from "../../lib/utils/random";
 import { MLPActorCritic } from "../../lib/Models/ac";
 import { PPO, PPOTrainConfigs } from "../../lib/Algos/ppo/index";
@@ -43,23 +46,10 @@ type Config = Omit<
   PPOTrainConfigs,
   "stepCallback" | "epochCallback" | "seed" | "ckptFreq" | "verbosity" | "name"
 >;
-const makeEnv = () => {
-  return new Custom();
-};
-const env = makeEnv();
+
+type Reward = CartPoleConfigs;
 
 const Ppo = () => {
-  const agent = useRef(
-    new PPO(
-      makeEnv,
-      new MLPActorCritic(env.observationSpace, env.actionSpace, [24, 48]),
-      {
-        actionToTensor: (action) => {
-          return action.argMax(1);
-        },
-      }
-    )
-  );
   const [observation, setObservation] = useState<{
     people: number;
     target: number;
@@ -68,14 +58,14 @@ const Ppo = () => {
     target: 0.7,
   });
   const [epochs, setEpochs] = useState<EpochCallbackInput[]>([]);
-  const form = useForm<Config>({
+  const parameters = useForm<Config>({
     initialValues: {
-      epochs: 50,
+      epochs: 100,
       gamma: 0.99,
-      stepsPerEpoch: 1000,
+      stepsPerEpoch: 500,
       clipRatio: 0.2,
-      piLr: 1e-3,
-      vfLr: 3e-4,
+      piLr: 7e-3,
+      vfLr: 6e-3,
       trainVIters: 80,
       trainPiIters: 1,
       lam: 0.97,
@@ -83,7 +73,50 @@ const Ppo = () => {
       targetKl: 0.01,
     },
   });
-  const runModel = useCallback(async (configs: Config) => {
+  const rewards = useForm<Reward>({
+    initialValues: {
+      rewardStep: -1,
+      maxEpisodeSteps: 50,
+      rewardTargetNotReached: -10,
+      rewardTargetReached: 10,
+      reachedTargetFirstTry: 20,
+    },
+  });
+
+  const makeEnv = useRef(() => {
+    return new Custom({ ...rewards.values });
+  });
+  const env = makeEnv.current();
+  const agent = useRef(
+    new PPO(
+      makeEnv.current,
+      new MLPActorCritic(env.observationSpace, env.actionSpace, [24, 48]),
+      {
+        actionToTensor: (action) => {
+          return action.argMax(1);
+        },
+      }
+    )
+  );
+  const [step, setStep] = useState(0);
+  const [stepReward, setStepReward] = useState(0);
+  const sumRewards = useRef(0);
+
+  async function startModel() {
+    await agent.current.stop();
+    await agent.current.isStop();
+    const makeEnv = () => {
+      return new Custom({ ...rewards.values });
+    };
+    agent.current = new PPO(
+      makeEnv,
+      new MLPActorCritic(env.observationSpace, env.actionSpace, [24, 48]),
+      {
+        actionToTensor: (action) => {
+          return action.argMax(1);
+        },
+      }
+    );
     seed(0);
     setEpochs([]);
     let obs = env.reset();
@@ -91,7 +124,19 @@ const Ppo = () => {
       people: obs.get(0),
       target: obs.get(1),
     });
-    const stepCallback: StepCallback = async ({ observation }) => {
+    const stepCallback: StepCallback = async ({
+      observation,
+      reward,
+      done,
+    }) => {
+      if (done) {
+        setStep(1);
+        setStepReward(sumRewards.current);
+        sumRewards.current = reward;
+      } else {
+        setStep((prev) => prev + 1);
+        sumRewards.current += reward;
+      }
       setObservation({
         people: observation.get(0),
         target: observation.get(1),
@@ -103,16 +148,15 @@ const Ppo = () => {
         return [config, ...prevState];
       });
     };
-    const done = await agent.current.train({
-      ...configs,
+    await agent.current.train({
+      ...parameters.values,
       stepCallback,
       epochCallback,
     });
-    return done;
-  }, []);
+  }
 
   const data = {
-    labels: epochs.map(({ step }) => step.toString()),
+    labels: epochs.map(({ step }) => `Step ${step.toString()}`),
     datasets: [
       {
         label: "Max",
@@ -149,8 +193,8 @@ const Ppo = () => {
         grid-gap: 5px;
         grid-template-columns: 1fr 1fr;
         grid-template-areas: ${showChart
-          ? '"statistics statistics" "environment form"'
-          : '"environment form"'};
+          ? '"statistics statistics" "environment reward" "parameters parameters"'
+          : '"environment reward" "parameters parameters"'};
       `}
     >
       {showChart ? (
@@ -166,7 +210,7 @@ const Ppo = () => {
               plugins: {
                 title: {
                   display: true,
-                  text: "Epochs",
+                  text: "Reward",
                 },
               },
             }}
@@ -181,64 +225,129 @@ const Ppo = () => {
           grid-gap: 5px;
         `}
       >
+        <Button
+          css={css`
+            width: 100%;
+          `}
+          onClick={startModel}
+        >
+          Train
+        </Button>
         {borders.map((_, index) => {
           return (
             <div
               key={index + "borders"}
               css={css`
-                text-align: center;
-                border: 2px solid;
-                height: 70px;
-                width: 70px;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                justify-items: center;
+                align-items: center;
+                grid-gap: 5px;
               `}
             >
-              {index}
-              <div>
-                {[0, 10].includes(index) && <AiOutlineStop size={25} />}
-                {observation.people * 10 === index && (
-                  <MdEmojiPeople size={25} />
-                )}
-                {observation.target * 10 === index && (
-                  <BiTargetLock size={25} />
-                )}
+              <div
+                css={css`
+                  justify-self: right;
+                  text-align: center;
+                  border: 2px solid;
+                  height: 70px;
+                  width: 70px;
+                  display: grid;
+                  align-items: center;
+                `}
+              >
+                <div>
+                  {[0, 10].includes(index) && <AiOutlineStop size={25} />}
+                  {observation.people * 10 === index && (
+                    <MdEmojiPeople size={25} />
+                  )}
+                  {observation.target * 10 === index && (
+                    <BiTargetLock size={25} />
+                  )}
+                </div>
+              </div>
+              <div
+                css={css`
+                  justify-self: left;
+                `}
+              >
+                {observation.people * 10 === index && "Agent"}
+                {observation.target * 10 === index &&
+                  `Target: ${rewards.values.rewardTargetReached}/${rewards.values.reachedTargetFirstTry}`}
+                {[0, 10].includes(index)
+                  ? `Outside: ${rewards.values.rewardTargetNotReached}`
+                  : `(${rewards.values.rewardStep})`}
               </div>
             </div>
           );
         })}
       </div>
+      <form
+        css={css`
+          grid-area: reward;
+          display: grid;
+          align-items: center;
+          padding: 20px;
+        `}
+      >
+        <h2>Last Reward: {stepReward}</h2>
+        <h2>Current step: {step}</h2>
+        <HelpText text={"Set the reward for each step the agent takes."}>
+          <NumberInput
+            precision={1}
+            required
+            label="Reward per step"
+            {...rewards.getInputProps("rewardStep")}
+          />
+        </HelpText>
+        <HelpText text={"Max step before episode ends"}>
+          <NumberInput
+            required
+            label="Max Episode Steps"
+            {...rewards.getInputProps("maxEpisodeSteps")}
+          />
+        </HelpText>
+        <NumberInput
+          required
+          label="Reward Target Not Reached"
+          {...rewards.getInputProps("rewardTargetNotReached")}
+        />
+        <NumberInput
+          required
+          label="Reward Target Reached"
+          {...rewards.getInputProps("rewardTargetReached")}
+        />
+        <NumberInput
+          required
+          label="Reached Target First Try"
+          {...rewards.getInputProps("reachedTargetFirstTry")}
+        />
+        <Button
+          css={css`
+            width: 100%;
+          `}
+          onClick={() => rewards.reset()}
+          type="button"
+        >
+          Reset
+        </Button>
+      </form>
       <div
         css={css`
-          grid-area: form;
+          grid-area: parameters;
           display: grid;
           align-items: center;
           padding: 20px;
         `}
       >
         <Paper>
+          <h2>Parameters</h2>
           <form
             css={css`
               display: grid;
               align-items: center;
               grid-gap: 15px;
             `}
-            onSubmit={form.onSubmit(async (values) => {
-              await agent.current.stop();
-              await agent.current.isStop();
-              agent.current = new PPO(
-                makeEnv,
-                new MLPActorCritic(
-                  env.observationSpace,
-                  env.actionSpace,
-                  [24, 48]
-                ),
-                {
-                  actionToTensor: (action) => {
-                    return action.argMax(1);
-                  },
-                }
-              );
-              runModel(values);
-            })}
           >
             <HelpText
               text={
@@ -248,7 +357,7 @@ const Ppo = () => {
               <NumberInput
                 required
                 label="Steps Per Epoch"
-                {...form.getInputProps("stepsPerEpoch")}
+                {...parameters.getInputProps("stepsPerEpoch")}
               />
             </HelpText>
             <HelpText
@@ -259,7 +368,7 @@ const Ppo = () => {
               <NumberInput
                 required
                 label="Number of Epochs"
-                {...form.getInputProps("epochs")}
+                {...parameters.getInputProps("epochs")}
               />
             </HelpText>
             <div>
@@ -272,7 +381,7 @@ const Ppo = () => {
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(2)}
-                  {...form.getInputProps("gamma")}
+                  {...parameters.getInputProps("gamma")}
                   step={0.01}
                   min={0}
                   max={1}
@@ -289,7 +398,7 @@ const Ppo = () => {
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(1)}
-                  {...form.getInputProps("clipRatio")}
+                  {...parameters.getInputProps("clipRatio")}
                   step={0.1}
                   min={0.1}
                   max={0.5}
@@ -302,7 +411,7 @@ const Ppo = () => {
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(6)}
-                  {...form.getInputProps("piLr")}
+                  {...parameters.getInputProps("piLr")}
                   step={1e-6}
                   max={1e-2}
                   min={1e-6}
@@ -315,7 +424,7 @@ const Ppo = () => {
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(6)}
-                  {...form.getInputProps("vfLr")}
+                  {...parameters.getInputProps("vfLr")}
                   step={1e-6}
                   max={1e-2}
                   min={1e-6}
@@ -330,7 +439,7 @@ const Ppo = () => {
               <NumberInput
                 required
                 label="train_v_iters"
-                {...form.getInputProps("trainVIters")}
+                {...parameters.getInputProps("trainVIters")}
               />
             </HelpText>
             <HelpText
@@ -341,7 +450,7 @@ const Ppo = () => {
               <NumberInput
                 required
                 label="train_pi_iters"
-                {...form.getInputProps("trainPiIters")}
+                {...parameters.getInputProps("trainPiIters")}
               />
             </HelpText>
             <HelpText
@@ -350,7 +459,7 @@ const Ppo = () => {
               <NumberInput
                 required
                 label="MaxEpLen"
-                {...form.getInputProps("maxEpLen")}
+                {...parameters.getInputProps("maxEpLen")}
               />
             </HelpText>
             <div>
@@ -363,7 +472,7 @@ const Ppo = () => {
                 <Slider
                   labelAlwaysOn
                   label={(value) => value.toFixed(3)}
-                  {...form.getInputProps("targetKl")}
+                  {...parameters.getInputProps("targetKl")}
                   step={0.001}
                   max={0.2}
                   min={0.0}
@@ -374,18 +483,10 @@ const Ppo = () => {
               css={css`
                 width: 100%;
               `}
-              onClick={() => form.reset()}
+              onClick={() => parameters.reset()}
               type="button"
             >
               Reset
-            </Button>
-            <Button
-              css={css`
-                width: 100%;
-              `}
-              type="submit"
-            >
-              Apply
             </Button>
           </form>
         </Paper>

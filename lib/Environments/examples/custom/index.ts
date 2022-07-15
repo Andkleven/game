@@ -31,7 +31,7 @@ export function choice(number: number, prop: number[]): number[] {
   });
 }
 export interface CartPoleConfigs {
-  maxEpisodeSteps: number;
+  maxEpisodeSteps?: number;
   rewardStep: number;
   rewardTargetReached: number;
   rewardTargetNotReached: number;

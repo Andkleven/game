@@ -30,7 +30,7 @@ export default function HelpText({
     >
       {children}
       <ActionIcon
-        ref={setReferenceElement}
+        ref={setReferenceElement as any}
         onClick={() => setVisible((m) => !m)}
       >
         <BsQuestionLg />
@@ -42,7 +42,7 @@ export default function HelpText({
         arrowSize={5}
         withArrow
         mounted={visible}
-        referenceElement={referenceElement}
+        referenceElement={referenceElement as any}
         transition="pop-top-left"
         transitionDuration={200}
         arrowStyle={{

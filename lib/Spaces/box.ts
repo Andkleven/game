@@ -125,7 +125,7 @@ export class Box extends Space<nj.NdArray<number>> {
     const sample = np.zeros(this.shape);
     // determine which indices are lower bounded and upper bounded
     if (this.boundedBelow === null && this.boundedAbove === null) {
-      return tf.randomNormal(this.shape).arraySync();
+      return tf.randomNormal(this.shape).arraySync() as any;
     }
 
     np.set(
@@ -162,7 +162,7 @@ export class Box extends Space<nj.NdArray<number>> {
       }
       np.set(sample, this.bounded, vals);
     }
-    return np.toTensorFromNp(sample).arraySync();
+    return np.toTensorFromNp(sample).arraySync() as any;
   }
   contains(x: NdArray): boolean {
     if (!np.arrayEqual(x.shape, this.shape)) return false;

@@ -48,7 +48,7 @@ function randomTarget() {
 /**
  * CartPole environment
  */
-export class Custom extends Environment<
+export class SquareGame extends Environment<
   ObservationSpace,
   ActionSpace,
   Observation,

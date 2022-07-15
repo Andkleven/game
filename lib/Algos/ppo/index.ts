@@ -85,6 +85,10 @@ export class PPO<
   private actionToTensor: (action: tf.Tensor) => TensorLike;
   private stopValue = false;
   private done = true;
+  private o: Observation;
+  private ep_rets: number[] = [];
+  private ep_ret = 0;
+  private ep_len = 0;
 
   constructor(
     /** function that creates environment for interaction */
@@ -103,8 +107,8 @@ export class PPO<
   ) {
     super();
     this.configs = deepMerge(this.configs, configs);
-
     this.env = makeEnv();
+    this.o = this.env.reset();
     this.obsToTensor = this.configs.obsToTensor;
     this.actionToTensor = this.configs.actionToTensor;
   }
@@ -121,7 +125,17 @@ export class PPO<
     );
   }
 
-  public async train(trainConfigs: Partial<PPOTrainConfigs>) {
+  public async train(
+    trainConfigs: Partial<PPOTrainConfigs>,
+    makeEnv?: () => Environment<
+      ObservationSpace,
+      ActionSpace,
+      Observation,
+      any,
+      Action,
+      number
+    >
+  ) {
     let configs: PPOTrainConfigs = {
       vfLr: 1e-3,
       piLr: 3e-4,
@@ -141,6 +155,10 @@ export class PPO<
       stepCallback: async () => {},
       epochCallback: () => {},
     };
+    if (makeEnv) {
+      this.env = makeEnv();
+    }
+    this.stopValue = false;
     this.done = false;
     configs = deepMerge(configs, trainConfigs);
     log.level = configs.verbosity;
@@ -154,9 +172,8 @@ export class PPO<
     random.seed(configs.seed);
     // TODO: seed tensorflow if possible
 
-    const env = this.env;
-    const obs_dim = env.observationSpace.shape;
-    const act_dim = env.actionSpace.shape;
+    const obs_dim = this.env.observationSpace.shape;
+    const act_dim = this.env.actionSpace.shape;
 
     let local_steps_per_epoch = configs.stepsPerEpoch;
     if (Math.ceil(local_steps_per_epoch) !== local_steps_per_epoch) {
@@ -286,11 +303,6 @@ export class PPO<
       return metrics;
     };
 
-    // const start_time = process.hrtime()[0] * 1e6 + process.hrtime()[1];
-    let o = env.reset();
-    let ep_ret = 0;
-    let ep_rets: number[] = [];
-    let ep_len = 0;
     for (let epoch = 0; epoch < configs.epochs; epoch++) {
       if (this.stopValue) {
         this.done = true;
@@ -301,9 +313,9 @@ export class PPO<
           this.done = true;
           return "done";
         }
-        const { a, v, logp_a } = this.ac.step(this.obsToTensor(o));
+        const { a, v, logp_a } = this.ac.step(this.obsToTensor(this.o));
         const action = np.tensorLikeToNdArray(this.actionToTensor(a));
-        const stepInfo = env.step(action);
+        const stepInfo = this.env.step(action);
         const next_o = stepInfo.observation;
 
         const r = stepInfo.reward;
@@ -314,42 +326,41 @@ export class PPO<
           step: t,
           done: d,
         });
-        ep_ret += r;
-        ep_len += 1;
-
+        this.ep_ret = Number((this.ep_ret + r).toFixed(1));
+        this.ep_len += 1;
         buffer.store(
-          np.tensorLikeToNdArray(this.obsToTensor(o)),
+          np.tensorLikeToNdArray(this.obsToTensor(this.o)),
           np.tensorLikeToNdArray(a),
           r,
           np.tensorLikeToNdArray(v).get(0, 0),
           np.tensorLikeToNdArray(logp_a!).get(0, 0)
         );
 
-        o = next_o;
+        this.o = next_o;
 
-        const timeout = ep_len === configs.maxEpLen;
+        const timeout = this.ep_len === configs.maxEpLen;
         const terminal = d || timeout;
         const epoch_ended = t === local_steps_per_epoch - 1;
         if (terminal || epoch_ended) {
           if (epoch_ended && !terminal) {
             log.warn(
-              `${configs.name} | Trajectory cut off by epoch at ${ep_len} steps`
+              `${configs.name} | Trajectory cut off by epoch at ${this.ep_len} steps`
             );
           }
           let v = 0;
           if (timeout || epoch_ended) {
             v = (
-              this.ac.step(this.obsToTensor(o)).v.arraySync() as number[][]
+              this.ac.step(this.obsToTensor(this.o)).v.arraySync() as number[][]
             )[0][0];
           }
           buffer.finishPath(v);
           if (terminal) {
             // store ep ret and eplen stuff
-            ep_rets.push(ep_ret);
+            this.ep_rets.push(this.ep_ret);
           }
-          o = env.reset();
-          ep_ret = 0;
-          ep_len = 0;
+          this.o = this.env.reset();
+          this.ep_ret = 0;
+          this.ep_len = 0;
         }
       }
       // TODO save model
@@ -357,7 +368,7 @@ export class PPO<
       // update actor critic
       await update();
       const statistics = await ct.statisticsScalar(
-        np.tensorLikeToTensor(ep_rets)
+        np.tensorLikeToTensor(this.ep_rets)
       );
 
       configs.epochCallback({
@@ -365,20 +376,20 @@ export class PPO<
         statistics,
       });
 
-      ep_rets = [];
+      this.ep_rets = [];
     }
   }
   async stop() {
     this.stopValue = true;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  async isStop() {
+  async isStop(): Promise<boolean> {
     return await new Promise((resolve) => {
-      while (true) {
-        if (this.done) {
-          resolve(true);
-          return;
-        }
+      if (this.done) {
+        resolve(true);
+        return;
+      } else {
+        resolve(false);
       }
     });
   }

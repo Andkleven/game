@@ -1,7 +1,7 @@
 import { css } from "@emotion/react";
 
 import {
-  Custom,
+  SquareGame,
   CartPoleConfigs,
 } from "../../lib/Environments/examples/custom/index";
 import { seed } from "../../lib/utils/random";
@@ -75,16 +75,16 @@ const Ppo = () => {
   });
   const rewards = useForm<Reward>({
     initialValues: {
-      rewardStep: -1,
-      maxEpisodeSteps: 50,
-      rewardTargetNotReached: -10,
-      rewardTargetReached: 10,
+      rewardStep: -0.1,
+      maxEpisodeSteps: 20,
+      rewardTargetNotReached: -5,
+      rewardTargetReached: 20,
       reachedTargetFirstTry: 20,
     },
   });
 
   const makeEnv = useRef(() => {
-    return new Custom({ ...rewards.values });
+    return new SquareGame({ ...rewards.values });
   });
   const env = makeEnv.current();
   const agent = useRef(
@@ -102,11 +102,60 @@ const Ppo = () => {
   const [stepReward, setStepReward] = useState(0);
   const sumRewards = useRef(0);
 
+  function getCallback(): [StepCallback, EpochCallback] {
+    const stepCallback: StepCallback = async ({
+      observation,
+      reward,
+      done,
+    }) => {
+      if (done) {
+        setStep(1);
+        setStepReward(sumRewards.current);
+        sumRewards.current = reward;
+      } else {
+        setStep((prev) => prev + 1);
+        sumRewards.current = Number((sumRewards.current + reward).toFixed(1));
+      }
+      setObservation({
+        people: observation.get(0),
+        target: observation.get(1),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const epochCallback: EpochCallback = (config) => {
+      setEpochs((prevState) => {
+        return [config, ...prevState];
+      });
+    };
+    return [stepCallback, epochCallback];
+  }
+
+  async function pause() {
+    console.log("pause");
+    const stop = await agent.current.isStop();
+    console.log(stop);
+    if (stop) {
+      const [stepCallback, epochCallback] = getCallback();
+      console.log("resume");
+      console.log(agent.current);
+      const makeEnv = () => {
+        return new SquareGame({ ...rewards.values });
+      };
+      const a = await agent.current.train(
+        { ...parameters.values, stepCallback, epochCallback },
+        makeEnv
+      );
+      console.log(a);
+    } else {
+      await agent.current.stop();
+    }
+  }
+
   async function startModel() {
     await agent.current.stop();
     await agent.current.isStop();
     const makeEnv = () => {
-      return new Custom({ ...rewards.values });
+      return new SquareGame({ ...rewards.values });
     };
     agent.current = new PPO(
       makeEnv,
@@ -124,30 +173,8 @@ const Ppo = () => {
       people: obs.get(0),
       target: obs.get(1),
     });
-    const stepCallback: StepCallback = async ({
-      observation,
-      reward,
-      done,
-    }) => {
-      if (done) {
-        setStep(1);
-        setStepReward(sumRewards.current);
-        sumRewards.current = reward;
-      } else {
-        setStep((prev) => prev + 1);
-        sumRewards.current += reward;
-      }
-      setObservation({
-        people: observation.get(0),
-        target: observation.get(1),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    };
-    const epochCallback: EpochCallback = (config) => {
-      setEpochs((prevState) => {
-        return [config, ...prevState];
-      });
-    };
+    const [stepCallback, epochCallback] = getCallback();
+
     await agent.current.train({
       ...parameters.values,
       stepCallback,
@@ -201,6 +228,7 @@ const Ppo = () => {
         <div
           css={css`
             grid-area: statistics;
+            height: 500pxs;
           `}
         >
           <Line
@@ -232,6 +260,14 @@ const Ppo = () => {
           onClick={startModel}
         >
           Train
+        </Button>
+        <Button
+          css={css`
+            width: 100%;
+          `}
+          onClick={pause}
+        >
+          Pause
         </Button>
         {borders.map((_, index) => {
           return (
